@@ -131,8 +131,8 @@ This implementation follows industry best practices for credit limit optimizatio
     - **Property P12_SteadyStateValid: Steady state probabilities sum to 1.0 ± 0.001**
     - **Validates: Requirements 13.3, 13.1, 13.4**
 
-- [ ] 7. Implement demand forecasting component
-  - [ ] 7.1 Create `forecast_utilization()` function
+- [x] 7. Implement demand forecasting component
+  - [x] 7.1 Create `forecast_utilization()` function
     - Fit time series model (ARIMA or exponential smoothing) to historical utilization data
     - Incorporate seasonality and trend components
     - Generate 3,000-4,000 Monte Carlo scenarios for demand uncertainty (configurable)
@@ -149,11 +149,11 @@ This implementation follows industry best practices for credit limit optimizatio
     - **Property P18_ForecastHorizonValid: Forecast horizon matches configured days**
     - **Validates: Requirements 13.1, 13.4, 13.1**
 
-- [ ] 8. Checkpoint - Ensure modeling components work correctly
+- [x] 8. Checkpoint - Ensure modeling components work correctly
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 9. Implement loan lifecycle simulation
-  - [ ] 9.1 Create `simulate_loan_lifecycle()` function
+  - [x] 9.1 Create `simulate_loan_lifecycle()` function
     - Accept customer DataFrame, n_iterations (3,000-4,000, configurable), horizon_days (365), discount_rate (default 12%, configurable)
     - For each customer, run Monte Carlo simulations:
       - Simulate credit state transitions
@@ -167,6 +167,7 @@ This implementation follows industry best practices for credit limit optimizatio
     - Add expected_revenue, expected_loss, profitability_score columns to DataFrame
     - Process customers in batches of 5,000 to manage memory
     - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5, 13.6, 13.7_
+    - _Implementation: Added to `loan_limit_optimization.ipynb`_
   
   - [ ]* 9.2 Write property tests for lifecycle simulation
     - **Property P19_MinIterations: At least 3,000 Monte Carlo iterations per customer**
