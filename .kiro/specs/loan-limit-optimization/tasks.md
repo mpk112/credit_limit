@@ -142,6 +142,7 @@ This implementation follows industry best practices for credit limit optimizatio
     - Support scenario-based forecasting (optimistic, baseline, adverse)
     - Add forecasted_utilization and utilization_std columns to DataFrame
     - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5, 13.6_
+    - _Implementation: Added to `loan_limit_optimization.ipynb` at cell index 21_
   
   - [ ]* 7.2 Write property tests for demand forecasting
     - **Property P16_UtilizationRange: Forecasted utilization in [0.0, 1.0]**
