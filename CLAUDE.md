@@ -33,7 +33,7 @@ Key configurable parameters (all have defaults):
 | Env Var | Default | Purpose |
 |---|---|---|
 | `FRED_API_KEY` | — | Required for macro data fetch; cached after first call |
-| `NPV_DISCOUNT_RATE` | 0.12 | Annual NPV discount rate |
+| `NPV_DISCOUNT_RATE` | 0.19 | Annual NPV discount rate (per brief specification) |
 | `SIMULATION_ITERATIONS` | 3500 | Monte Carlo iterations per customer |
 | `MAX_PORTFOLIO_DEFAULT_RISK` | 0.05 | Portfolio risk cap |
 | `MIN_PROFITABILITY_TARGET` | 1_000_000 | Minimum profit target |
