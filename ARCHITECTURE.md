@@ -24,9 +24,9 @@ CSV Input (30k customers)
            │
            ▼
 ┌─────────────────────────┐
-│  3. Risk Model           │  XGBoost classifies customers into 4 credit
-│                          │  states (Excellent/Good/Fair/Poor) using the
-│                          │  unified credit_score. Outputs default_risk ∈ [0,1].
+│  3. Risk Model           │  Ordinal rank aggregation on 4 raw features
+│                          │  assigns credit states (Excellent/Good/Fair/Poor)
+│                          │  and outputs default_risk ∈ [0.005, 0.27].
 └──────────┬──────────────┘
            │
            ▼
@@ -78,10 +78,11 @@ CSV Input (30k customers)
 | Decision | Rationale |
 |---|---|
 | Single notebook deliverable | Spec requirement — reproducible end-to-end via "Run All Cells" |
-| Unified `compute_credit_score()` | Eliminates two-proxy inconsistency; one formula feeds both XGBoost and state classification |
+| Unified `compute_credit_score()` | Retained for comparison baseline; no longer drives state assignment |
+| Ordinal rank over XGBoost | Features are nearly uncorrelated (r ≈ 0.001) and no default labels exist — XGBoost was training on a synthetic target derived from the same inputs it sees; ordinal ranking is equivalent output with no model complexity or circularity |
 | scipy HiGHS (not PuLP) | Handles 30k decision variables in ~1.6s; no external solver binary needed |
 | Vectorised Monte Carlo | All 30k × 3,000 iterations computed as numpy matrix ops in 5k-row batches — runs in ~2s vs hours with loops |
-| Fixed credit state thresholds | Domain-calibrated (655/572/483 on 300–850 scale) → realistic 11%/38%/40%/11% distribution |
+| Adaptive percentile thresholds | Actual credit scores compress into [403–739] not [300–850]; fixed thresholds left the Excellent bucket empty; 11/49/89th percentiles adapt to the real distribution |
 | FRED data cached to JSON | No repeated API calls; pipeline works offline after first run |
 | Order-1 Markov (validated) | Comparison vs orders 2 and 3 shows max 0.87 pp deviation — memoryless assumption confirmed not restrictive |
 | LP–Markov feedback loop | LP increases adjust transition probabilities → updated steady-state rescales default_risk → LP re-optimises; converges in 4 iterations, Poor SS drops 21.3% → 17.7% |
@@ -100,7 +101,7 @@ CSV Input (30k customers)
 
 ## Credit Scoring
 
-Single unified `compute_credit_score()` maps each customer to a FICO-style 300–850 score:
+`compute_credit_score()` maps each customer to a FICO-style 300–850 score using the same four features and weights as the ordinal risk rank. It is retained as a comparison baseline and for visualisation, but **no longer drives credit state assignment**.
 
 | Input | Weight | Normalisation |
 |---|---|---|
@@ -109,14 +110,9 @@ Single unified `compute_credit_score()` maps each customer to a FICO-style 300�
 | Recency (days since last loan) | 15% | Inverted, clipped to [0, 365], scaled 0–100 |
 | Profitability contribution | 20% | Clipped to [0, $120], scaled 0–100 |
 
-Fixed state thresholds on the 300–850 scale:
+Actual score range in this dataset: **[403, 739]** — compressed from the theoretical [300, 850] because all customers have on-time payments ≥ 80% (data is floor-clipped).
 
-| State | Threshold | Portfolio Share |
-|---|---|---|
-| Excellent | ≥ 655 | ~11% |
-| Good | ≥ 572 | ~38% |
-| Fair | ≥ 483 | ~40% |
-| Poor | < 483 | ~11% |
+State assignment now uses ordinal ranking (see below). The heuristic credit_score thresholds (655/572/483) are run as a comparison step only.
 
 ---
 
@@ -266,101 +262,90 @@ The LP's recommended increases shift the long-run portfolio toward better credit
 
 ---
 
-## XGBoost Risk Model — Two-Pass Architecture
+## Risk Model — Ordinal Rank Aggregation
 
-### Why Two Passes
+### Why Not a Model
 
-The original single-pass design had a circular feature problem: `credit_state_encoded` was fed to XGBoost as a feature, but it was derived from the same raw inputs (`on_time_payments_pct`, `num_increases_2023`, etc.) that XGBoost already sees directly. The state was redundant information dressed as a feature — XGBoost could infer it from the raw columns anyway.
+The input data has two structural properties that make supervised ML unnecessary:
 
-The two-pass approach fixes this: pass 1 derives a risk score from raw features only, uses that score to assign states, then pass 2 adds those states as a genuinely new signal — one derived from predicted risk rather than reconstructed from the same raw inputs.
+1. **No default outcome labels** — the CSV has no "defaulted: yes/no" column. Any model must train on a synthetic target derived from the same raw features it sees as inputs, which is circular.
+2. **Features are nearly uncorrelated** (r ≈ 0.001 between all pairs) — there are no non-linear interaction effects for a model to exploit. XGBoost's 200 trees would learn approximately the same ranking as a weighted sum.
+
+Ordinal ranking is transparent, deterministic, and produces equivalent output to any model trained on this data.
 
 ### Flow
 
 ```
-Raw features (no credit_state)
+Raw features (4 inputs)
         │
-        │  Pass 1 XGBoost
+        │  compute_ordinal_risk_rank()   — weighted percentile ranks
         ▼
-  default_risk_raw  [0.021, 0.227]
+  risk_rank  [0.0, 1.0]   (0 = safest, 1 = riskiest)
         │
-        │  adaptive percentile thresholds (11/49/89th)
+        │  assign_states_from_rank()   — adaptive 11/49/89th percentiles
         ▼
-  credit_state  (risk-anchored assignment)
+  credit_state  (Excellent / Good / Fair / Poor)
         │
-        │  Pass 2 XGBoost  (raw features + credit_state_encoded)
+        │  rank_to_default_risk()   — state base rate × within-state rank
         ▼
-  default_risk  [0.005, 0.270]   ← final output
+  default_risk  [0.005, 0.270]   ← used by LP and constraints
 ```
 
-### Pass 1 — Raw Features Only
+### Step 1 — Ordinal Risk Rank (`compute_ordinal_risk_rank`)
 
-**Features (10 total — no credit_state):**
+Each of the four raw features is converted to a percentile rank in [0, 1] oriented so that **0 = lowest risk direction, 1 = highest risk direction**, then combined with the same weights as the unified credit score:
 
-| Feature | Source |
-|---|---|
-| `credit_score` | Preprocessing — unified 300–850 score |
-| `utilization_rate` | Preprocessing |
-| `on_time_payments_pct` | Raw CSV |
-| `num_increases_2023` | Raw CSV |
-| `days_since_last_loan` | Raw CSV |
-| `macro_gdp_growth` | FRED cache |
-| `macro_unemployment` | FRED cache |
-| `macro_fed_rate` | FRED cache |
-| `macro_inflation` | FRED cache |
-
-**Target construction:** anchored to `credit_score` rank (continuous, no categorical state labels):
+| Feature | Direction | Weight |
+|---|---|---|
+| `on_time_payments_pct` | Higher = safer → **inverted** | 35% |
+| `num_increases_2023` | More increases = riskier → as-is | 30% |
+| `days_since_last_loan` | More days = less recent = riskier → as-is | 15% |
+| `total_profit_contribution` | Higher profit = safer → **inverted** | 20% |
 
 ```
-score_norm  = (credit_score - 300) / 550          # [0, 1]
-y_base_p1   = 0.18 × (1 - score_norm) + 0.005     # lower score = higher risk
-y_binary_p1 = 1  if  y_base_p1 + N(0, 0.01) >= median
+r_payment    = 1 - rank_pct(on_time_pct)
+r_discipline = rank_pct(num_increases)
+r_recency    = rank_pct(days_since_loan)
+r_profit     = 1 - rank_pct(profit)
+
+risk_rank = 0.35 × r_payment + 0.30 × r_discipline
+          + 0.15 × r_recency + 0.20 × r_profit
 ```
 
-**Calibration:**
-```
-default_risk_raw = clip( y_base_p1 × (0.5 + proba_p1),  0.001, 0.99 )
-```
+`risk_rank` is a continuous value in [0, 1] with mean exactly 0.50 by construction (average of symmetric ranks). Last run range: **[0.224, 0.788]** — the compressed range reflects floor-clipping in the raw data.
 
-### Risk-Anchored State Assignment
+### Step 2 — Credit State Assignment (`assign_states_from_rank`)
 
-Thresholds are computed from the actual pass-1 risk distribution using percentiles targeting the same ~11/38/40/11% portfolio split as the heuristic baseline:
+Thresholds are computed from the actual `risk_rank` distribution using adaptive percentile cuts targeting ~11/38/40/11% portfolio split:
 
 ```
-t_excellent = 11th percentile of default_risk_raw
-t_good      = 49th percentile of default_risk_raw   (11 + 38)
-t_fair      = 89th percentile of default_risk_raw   (49 + 40)
-
-Excellent  if  default_risk_raw <= t_excellent
-Good       if  default_risk_raw <= t_good
-Fair       if  default_risk_raw <= t_fair
-Poor       otherwise
+t_excellent = 11th percentile of risk_rank    → bottom 11% → Excellent
+t_good      = 49th percentile of risk_rank    → 11–49%     → Good
+t_fair      = 89th percentile of risk_rank    → 49–89%     → Fair
+                                              → top 11%    → Poor
 ```
-
-Adaptive thresholds are used because the actual credit score range [403–739] compresses the theoretical [300–850] range, making the pass-1 risk floor ~0.021 rather than the theoretical minimum. Percentile thresholds adapt to whatever range the model produces.
 
 **Last run thresholds:**
 ```
-Excellent ≤ 0.034  |  Good ≤ 0.093  |  Fair ≤ 0.187  |  Poor > 0.187
+Excellent ≤ 0.3548  |  Good ≤ 0.4963  |  Fair ≤ 0.6451  |  Poor > 0.6451
 ```
 
-State labels now carry a direct probability interpretation — Excellent customers have predicted default risk below 3.4%, Poor customers above 18.7%.
+Percentile thresholds are used rather than fixed values because `risk_rank` compresses into a subset of [0, 1] depending on data distribution — fixed thresholds would leave buckets empty.
 
-### State Distribution: Heuristic vs Risk-Anchored
+### State Distribution: Ordinal Rank vs Heuristic
 
-| State | Heuristic (credit_score) | Risk-Anchored (pass-1) | Delta |
+| State | Ordinal Rank | Heuristic (credit_score) | Delta |
 |---|---|---|---|
-| Excellent | 3,337 (11.1%) | 3,300 (11.0%) | ↓ 37 |
-| Good | 11,434 (38.1%) | 11,400 (38.0%) | ↓ 34 |
-| Fair | 12,024 (40.1%) | 12,000 (40.0%) | ↓ 24 |
-| Poor | 3,205 (10.7%) | 3,300 (11.0%) | ↑ 95 |
+| Excellent | 3,300 (11.0%) | 3,337 (11.1%) | ↓ 37 |
+| Good | 11,400 (38.0%) | 11,434 (38.1%) | ↓ 34 |
+| Fair | 12,000 (40.0%) | 12,024 (40.1%) | ↓ 24 |
+| Poor | 3,300 (11.0%) | 3,205 (10.7%) | ↑ 95 |
 
-The near-identical distributions confirm the heuristic score and predicted risk agree on customer ordering — but the risk-anchored states now carry a probabilistic meaning the score-based states lacked.
+< 100 customers move per bucket — ordinal ranking and the heuristic score agree on customer ordering because both use the same four features with the same weights.
 
-### Pass 2 — Raw Features + Risk-Anchored State
+### Step 3 — Default Risk (`rank_to_default_risk`)
 
-`credit_state_encoded` is added as an 11th feature. It is now genuinely informative: derived from pass-1 predicted risk, not reconstructed from the same raw inputs XGBoost already sees.
-
-**Target construction (pass 2):** uses risk-anchored state base rates:
+`risk_rank` is a relative ordering, not a probability. To produce a `default_risk` value compatible with the LP's 5% portfolio constraint, it is mapped to a pseudo-probability anchored to state base rates:
 
 | State | Base Default Rate |
 |---|---|
@@ -369,51 +354,36 @@ The near-identical distributions confirm the heuristic score and predicted risk 
 | Fair | 7.0% |
 | Poor | 18.0% |
 
+Within each state, customers are ranked again (within-state percentile rank) to produce intra-state variation:
+
 ```
-y_base_p2  = base_rate[credit_state]
-y_binary_p2 = 1  if  y_base_p2 + N(0, 0.01) >= median
-default_risk = clip( y_base_p2 × (0.5 + proba_p2),  0.001, 0.99 )
-```
-
-Pass 2 recovers lower risk values for Excellent customers (down to 0.005) that pass 1 could not reach without the state signal.
-
-### Model Configuration (both passes)
-
-```python
-xgb.XGBClassifier(
-    n_estimators  = 100,
-    max_depth     = 4,
-    learning_rate = 0.1,
-    eval_metric   = 'logloss',
-    random_state  = 42
-)
+within_rank    = rank_pct(risk_rank  within state)     # [0, 1]
+default_risk   = clip( base_rate × (0.5 + within_rank),  0.001, 0.99 )
 ```
 
-Fallback chain: XGBoost → `GradientBoostingClassifier`.
+The `(0.5 + within_rank)` scale factor produces output in `[0.5×base, 1.5×base]` — e.g., Excellent customers range from 0.5% to 1.5%, Poor customers from 9% to 27%. Output range matches previous XGBoost output; all downstream LP constraints and portfolio risk checks are unchanged.
 
 ### Output Columns
 
 | Column | Description |
 |---|---|
-| `default_risk_raw` | Pass-1 risk score, `[0.021, 0.227]` |
-| `credit_state` | Risk-anchored state (reassigned by pass-1 output) |
-| `default_risk` | Pass-2 final risk score, `[0.005, 0.270]` |
+| `risk_rank` | Ordinal risk rank, `[0.224, 0.788]` — 0 = safest |
+| `credit_state` | State assigned from risk_rank percentile thresholds |
+| `default_risk` | Pseudo-probability, `[0.005, 0.270]` — used by LP |
 | `high_risk_flag` | `True` if `default_risk > 0.15` |
-| `risk_model` | `'XGBoost (2-pass)'` |
-| `model_version` | `'v2.0.0'` |
+| `risk_model` | `'ordinal_rank'` |
 
 ### Last Run Results
 
-- Pass-1 risk range: **[0.021, 0.227]**
-- Pass-2 risk range: **[0.005, 0.270]**
-- High-risk customers (> 15%): **3,300 (11.0%)**
+- Risk rank range: **[0.224, 0.788]**, mean 0.500
+- Default risk range: **[0.005, 0.270]**
+- High-risk customers (> 15%): **2,200 (7.3%)**
 
-### Key Design Notes
+### When to Upgrade
 
-1. **No circular features** — pass-1 trains without `credit_state`, eliminating the original redundancy.
-2. **States earn their information** — pass-2 `credit_state_encoded` is derived from predicted risk, so it adds signal beyond what raw features already provide.
-3. **Macro features in both passes** — GDP/unemployment/rate/inflation adjust risk levels to the current macro environment in both models.
-4. **No train/test split** — intentional; the goal is risk *scoring* for the LP objective, not generalised classification.
+Ordinal ranking should be replaced with a supervised model when:
+- **Real default/delinquency labels become available** — even a simple logistic regression on 5 features would be far more meaningful than any model trained on a synthetic target
+- **More features are added** — bureau data, transaction history, demographics; ordinal ranking does not scale gracefully to 50+ features with genuine interactions
 
 ---
 
@@ -515,20 +485,34 @@ S_i  =  ───  [ 35 x ─────────────  +  30 x ─�
 
 Each term clipped to [0, 100] before weighting. S_i in [300, 850].
 
-### Step 2 — Credit State (from score)
+### Step 2 — Risk Rank and Credit State (ordinal ranking)
 
 ```
-              ┌ Excellent    if  S_i >= 655
-              │ Good         if  572 <= S_i < 655
-state_i  =   │ Fair         if  483 <= S_i < 572
-              └ Poor         if  S_i <  483
+Ordinal risk rank (0 = safest, 1 = riskiest):
 
-State      Interest rate (r_i)    Base default (d_i)
-─────────  ────────────────────   ──────────────────
-Excellent          9%                    0.5%
-Good              12%                    1.5%
-Fair              16%                    5.0%
-Poor              22%                   15.0%
+  rho_i = 0.35 x (1 - rank_pct(otp_i))
+        + 0.30 x  rank_pct(inc_i)
+        + 0.15 x  rank_pct(days_i)
+        + 0.20 x (1 - rank_pct(profit_i))
+
+Adaptive state thresholds (11th / 49th / 89th percentile of rho):
+
+              ┌ Excellent    if  rho_i <= p11
+              │ Good         if  rho_i <= p49
+state_i  =   │ Fair         if  rho_i <= p89
+              └ Poor         otherwise
+
+Default risk within each state:
+
+  d_i = clip( base_rate[state_i] x (0.5 + rank_pct(rho_i | state_i)),
+              0.001, 0.99 )
+
+State      base_rate    Interest rate (r_i)    Lifecycle d_i
+─────────  ──────────   ────────────────────   ─────────────
+Excellent     1.0%              9%                   0.5%
+Good          2.5%             12%                   1.5%
+Fair          7.0%             16%                   5.0%
+Poor         18.0%             22%                  15.0%
 ```
 
 ### Step 3 — Forecasted Utilization
@@ -614,12 +598,16 @@ Subject to:
 
 ```
 Raw CSV
-  (otp, inc, days, profit)
+  (otp, inc, days, profit, loan)
         │
-        │  compute_credit_score()
+        │  compute_ordinal_risk_rank()   [weighted percentile ranks]
         ▼
-  Credit score S_i  ──►  Credit state  ──►  r_i (interest rate)
-        │                                    d_i (base default)
+  risk_rank_i  ──►  assign_states_from_rank()  ──►  credit_state_i
+                                                      r_i (interest rate)
+        │                                             d_i (base default)
+        │  rank_to_default_risk()
+        ▼
+  default_risk_i   [used by LP portfolio constraint]
         │
         │  forecast_utilization()  [3,000 GBM scenarios]
         ▼
@@ -635,7 +623,7 @@ Raw CSV
         │
         │  / L_i (current loan)
         ▼
-  rho_i  (LP objective coefficient)
+  profit_rate_i  (LP objective coefficient)
         │
         │  HiGHS LP solver
         ▼
@@ -686,3 +674,5 @@ Raw CSV
 - Expected incremental profit: $3.25M
 - Portfolio default risk: 5.00% (at constraint boundary)
 - LP solver: HiGHS, optimal in ~1.6s
+- Risk model: ordinal rank, 2,200 high-risk customers flagged (7.3%)
+- 44/44 property tests pass
