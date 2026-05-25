@@ -433,6 +433,151 @@ The LP then maximises total profitability score across all customers. Without de
 
 ---
 
+## LP Optimization — Mathematical Formulation
+
+### Step 1 — Credit Score (from raw CSV)
+
+```
+         1   [          otp_i - 80              5 - inc_i
+S_i  =  ───  [ 35 x ─────────────  +  30 x ─────────────
+        100   [          20                      5
+
+                    365 - days_i              profit_i  ]
+              + 15 x ────────────  +  20 x ──────────── ]  x  550  +  300
+                         365                   120      ]
+```
+
+Each term clipped to [0, 100] before weighting. S_i in [300, 850].
+
+### Step 2 — Credit State (from score)
+
+```
+              ┌ Excellent    if  S_i >= 655
+              │ Good         if  572 <= S_i < 655
+state_i  =   │ Fair         if  483 <= S_i < 572
+              └ Poor         if  S_i <  483
+
+State      Interest rate (r_i)    Base default (d_i)
+─────────  ────────────────────   ──────────────────
+Excellent          9%                    0.5%
+Good              12%                    1.5%
+Fair              16%                    5.0%
+Poor              22%                   15.0%
+```
+
+### Step 3 — Forecasted Utilization
+
+```
+U_i  =  0.6 x mu_state  +  0.4 x u_i_raw  +  eps_i
+
+  where  eps_i ~ Normal(0, 0.3 x sigma_state)
+         mu_state = cohort mean from 3,000 GBM Monte Carlo scenarios
+         u_i_raw  = customer's historical utilization rate
+
+U_i clipped to [0.01, 0.99]
+```
+
+### Step 4 — Lifecycle Simulation (3,000 draws per customer)
+
+```
+For each draw j = 1 ... 3,000:
+
+  Simulated utilization:
+    U_ij  =  clip( U_i  +  sigma_i x Z_j ,  0.01, 0.99 )
+             where Z_j ~ Normal(0, 1)
+
+  Revenue:
+    Rev_ij  =  L_i x U_ij x ( r_i + 0.005 )
+
+  Default probability (utilization-adjusted):
+    p_ij  =  clip( d_i x (1 + U_ij) ,  0,  0.60 )
+
+  Loss (LGD = 50%):
+    Loss_ij  =  L_i x U_ij x Bernoulli(p_ij) x 0.50
+
+NPV discount factor at 12% annual rate:
+          1 - exp(-0.12)
+  delta = ──────────────  =  0.943
+               0.12
+
+Expected values (averaged over 3,000 draws, then discounted):
+
+  Revenue_i  =  delta x mean_j( Rev_ij  )
+  Loss_i     =  delta x mean_j( Loss_ij )
+
+  ┌─────────────────────────────────────────┐
+  │  pi_i  =  Revenue_i  -  Loss_i         │
+  └─────────────────────────────────────────┘
+  pi_i = profitability score for customer i
+```
+
+### Step 5 — Profit Rate (LP objective coefficient)
+
+```
+         pi_i
+  rho_i = ────
+           L_i
+
+Dividing by current loan L_i converts absolute profit into
+return per dollar of existing exposure, so customers of
+different loan sizes compete on equal footing in the LP.
+```
+
+### Step 6 — Linear Programme
+
+```
+Decision variable:
+  x_i >= 0     (limit increase for customer i)
+
+Objective:
+  maximise   SUM_i ( rho_i x x_i )
+
+Subject to:
+
+  [1] Portfolio default risk <= 5%
+      SUM_i (d_i - 0.05) x x_i  <=  -SUM_i (d_i - 0.05) x L_i
+
+  [2] Total new exposure <= $500M
+      SUM_i x_i  <=  500,000,000 - SUM_i L_i
+
+  [3] Per-customer cap
+      0  <=  x_i  <=  50,000 - L_i     for all i
+```
+
+### Full Chain at a Glance
+
+```
+Raw CSV
+  (otp, inc, days, profit)
+        │
+        │  compute_credit_score()
+        ▼
+  Credit score S_i  ──►  Credit state  ──►  r_i (interest rate)
+        │                                    d_i (base default)
+        │
+        │  forecast_utilization()  [3,000 GBM scenarios]
+        ▼
+  Forecasted utilization U_i
+        │
+        │  simulate_loan_lifecycle()  [3,000 Monte Carlo draws]
+        ▼
+  Revenue_i,  Loss_i
+        │
+        │  profitability score
+        ▼
+  pi_i  =  Revenue_i - Loss_i
+        │
+        │  / L_i (current loan)
+        ▼
+  rho_i  (LP objective coefficient)
+        │
+        │  HiGHS LP solver
+        ▼
+  x_i*  (optimal limit increase per customer)
+```
+
+---
+
 ## Macroeconomic Scenarios
 
 | Scenario | GDP | Unemployment | Interest Rate | Inflation |
