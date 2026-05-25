@@ -266,29 +266,118 @@ The LP's recommended increases shift the long-run portfolio toward better credit
 
 ---
 
-## XGBoost Risk Model
+## XGBoost Risk Model — Two-Pass Architecture
 
-### Role in the Pipeline
-`estimate_default_risk()` runs after `classify_credit_states()`. Takes the enriched DataFrame and outputs a `default_risk` probability per customer in `[0, 1]`.
+### Why Two Passes
 
-### Input Features
+The original single-pass design had a circular feature problem: `credit_state_encoded` was fed to XGBoost as a feature, but it was derived from the same raw inputs (`on_time_payments_pct`, `num_increases_2023`, etc.) that XGBoost already sees directly. The state was redundant information dressed as a feature — XGBoost could infer it from the raw columns anyway.
 
-| Feature | Source | Notes |
-|---|---|---|
-| `credit_score` | Preprocessing | Unified 300–850 FICO-style score |
-| `utilization_rate` | Preprocessing | `profit / loan × 5`, clipped to [0.05, 0.95] |
-| `credit_state_encoded` | Label-encoded state | Excellent=0, Fair=1, Good=2, Poor=3 |
-| `on_time_payments_pct` | Raw CSV | [0, 100] |
-| `num_increases_2023` | Raw CSV | Count of prior limit increases |
-| `days_since_last_loan` | Raw CSV | Recency signal |
-| `macro_gdp_growth` | FRED cache | Appended in macro enrichment stage |
-| `macro_unemployment` | FRED cache | Appended in macro enrichment stage |
-| `macro_fed_rate` | FRED cache | Appended in macro enrichment stage |
-| `macro_inflation` | FRED cache | Appended in macro enrichment stage |
+The two-pass approach fixes this: pass 1 derives a risk score from raw features only, uses that score to assign states, then pass 2 adds those states as a genuinely new signal — one derived from predicted risk rather than reconstructed from the same raw inputs.
 
-10 features total (6 customer + 4 macro).
+### Flow
 
-### Model Configuration
+```
+Raw features (no credit_state)
+        │
+        │  Pass 1 XGBoost
+        ▼
+  default_risk_raw  [0.021, 0.227]
+        │
+        │  adaptive percentile thresholds (11/49/89th)
+        ▼
+  credit_state  (risk-anchored assignment)
+        │
+        │  Pass 2 XGBoost  (raw features + credit_state_encoded)
+        ▼
+  default_risk  [0.005, 0.270]   ← final output
+```
+
+### Pass 1 — Raw Features Only
+
+**Features (10 total — no credit_state):**
+
+| Feature | Source |
+|---|---|
+| `credit_score` | Preprocessing — unified 300–850 score |
+| `utilization_rate` | Preprocessing |
+| `on_time_payments_pct` | Raw CSV |
+| `num_increases_2023` | Raw CSV |
+| `days_since_last_loan` | Raw CSV |
+| `macro_gdp_growth` | FRED cache |
+| `macro_unemployment` | FRED cache |
+| `macro_fed_rate` | FRED cache |
+| `macro_inflation` | FRED cache |
+
+**Target construction:** anchored to `credit_score` rank (continuous, no categorical state labels):
+
+```
+score_norm  = (credit_score - 300) / 550          # [0, 1]
+y_base_p1   = 0.18 × (1 - score_norm) + 0.005     # lower score = higher risk
+y_binary_p1 = 1  if  y_base_p1 + N(0, 0.01) >= median
+```
+
+**Calibration:**
+```
+default_risk_raw = clip( y_base_p1 × (0.5 + proba_p1),  0.001, 0.99 )
+```
+
+### Risk-Anchored State Assignment
+
+Thresholds are computed from the actual pass-1 risk distribution using percentiles targeting the same ~11/38/40/11% portfolio split as the heuristic baseline:
+
+```
+t_excellent = 11th percentile of default_risk_raw
+t_good      = 49th percentile of default_risk_raw   (11 + 38)
+t_fair      = 89th percentile of default_risk_raw   (49 + 40)
+
+Excellent  if  default_risk_raw <= t_excellent
+Good       if  default_risk_raw <= t_good
+Fair       if  default_risk_raw <= t_fair
+Poor       otherwise
+```
+
+Adaptive thresholds are used because the actual credit score range [403–739] compresses the theoretical [300–850] range, making the pass-1 risk floor ~0.021 rather than the theoretical minimum. Percentile thresholds adapt to whatever range the model produces.
+
+**Last run thresholds:**
+```
+Excellent ≤ 0.034  |  Good ≤ 0.093  |  Fair ≤ 0.187  |  Poor > 0.187
+```
+
+State labels now carry a direct probability interpretation — Excellent customers have predicted default risk below 3.4%, Poor customers above 18.7%.
+
+### State Distribution: Heuristic vs Risk-Anchored
+
+| State | Heuristic (credit_score) | Risk-Anchored (pass-1) | Delta |
+|---|---|---|---|
+| Excellent | 3,337 (11.1%) | 3,300 (11.0%) | ↓ 37 |
+| Good | 11,434 (38.1%) | 11,400 (38.0%) | ↓ 34 |
+| Fair | 12,024 (40.1%) | 12,000 (40.0%) | ↓ 24 |
+| Poor | 3,205 (10.7%) | 3,300 (11.0%) | ↑ 95 |
+
+The near-identical distributions confirm the heuristic score and predicted risk agree on customer ordering — but the risk-anchored states now carry a probabilistic meaning the score-based states lacked.
+
+### Pass 2 — Raw Features + Risk-Anchored State
+
+`credit_state_encoded` is added as an 11th feature. It is now genuinely informative: derived from pass-1 predicted risk, not reconstructed from the same raw inputs XGBoost already sees.
+
+**Target construction (pass 2):** uses risk-anchored state base rates:
+
+| State | Base Default Rate |
+|---|---|
+| Excellent | 1.0% |
+| Good | 2.5% |
+| Fair | 7.0% |
+| Poor | 18.0% |
+
+```
+y_base_p2  = base_rate[credit_state]
+y_binary_p2 = 1  if  y_base_p2 + N(0, 0.01) >= median
+default_risk = clip( y_base_p2 × (0.5 + proba_p2),  0.001, 0.99 )
+```
+
+Pass 2 recovers lower risk values for Excellent customers (down to 0.005) that pass 1 could not reach without the state signal.
+
+### Model Configuration (both passes)
 
 ```python
 xgb.XGBClassifier(
@@ -300,54 +389,31 @@ xgb.XGBClassifier(
 )
 ```
 
-Fallback chain: XGBoost → `GradientBoostingClassifier` → Logistic Regression.
-
-### Target Variable Construction
-
-The CSV has no historical default labels, so a synthetic binary target is constructed using domain rules:
-
-| State | Base Default Rate |
-|---|---|
-| Excellent | 1.0% |
-| Good | 2.5% |
-| Fair | 7.0% |
-| Poor | 18.0% |
-
-```
-y_continuous = base_risk + N(0, 0.01)   clipped to [0.005, 0.50]
-y_binary     = 1  if y_continuous ≥ median(y_continuous)
-```
-
-### Probability Calibration
-
-Raw XGBoost `predict_proba` is blended with domain base rates to prevent the model drifting from realistic risk levels:
-
-```python
-proba_scaled = clip(y_base × (0.5 + raw_proba), 0.001, 0.99)
-```
-
-Preserves the model's relative ranking while anchoring absolute probabilities to known state-level rates.
+Fallback chain: XGBoost → `GradientBoostingClassifier`.
 
 ### Output Columns
 
 | Column | Description |
 |---|---|
-| `default_risk` | Calibrated probability of default, `[0.005, 0.270]` |
+| `default_risk_raw` | Pass-1 risk score, `[0.021, 0.227]` |
+| `credit_state` | Risk-anchored state (reassigned by pass-1 output) |
+| `default_risk` | Pass-2 final risk score, `[0.005, 0.270]` |
 | `high_risk_flag` | `True` if `default_risk > 0.15` |
-| `risk_model` | Model name (`'XGBoost'`) |
-| `model_version` | `'v1.0.0'` |
-| `feature_importance_top` | Name of the most predictive feature |
+| `risk_model` | `'XGBoost (2-pass)'` |
+| `model_version` | `'v2.0.0'` |
 
 ### Last Run Results
 
-- Default risk range: **[0.0050, 0.2700]**
-- High-risk customers (> 15%): **3,205 (10.7%)** — coincides with the Poor state
+- Pass-1 risk range: **[0.021, 0.227]**
+- Pass-2 risk range: **[0.005, 0.270]**
+- High-risk customers (> 15%): **3,300 (11.0%)**
 
 ### Key Design Notes
 
-1. **Same score drives both classification and risk** — `credit_score` is the primary XGBoost feature *and* the basis for state assignment, eliminating the two-proxy inconsistency.
-2. **Macro features are intentional** — attaching GDP/unemployment/rate/inflation lets the model implicitly adjust risk levels to the current macro environment.
-3. **No train/test split** — fitting and scoring on the same 30k rows is intentional; the goal is risk *scoring* (a ranking signal for the LP), not a generalised classifier.
+1. **No circular features** — pass-1 trains without `credit_state`, eliminating the original redundancy.
+2. **States earn their information** — pass-2 `credit_state_encoded` is derived from predicted risk, so it adds signal beyond what raw features already provide.
+3. **Macro features in both passes** — GDP/unemployment/rate/inflation adjust risk levels to the current macro environment in both models.
+4. **No train/test split** — intentional; the goal is risk *scoring* for the LP objective, not generalised classification.
 
 ---
 
