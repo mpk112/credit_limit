@@ -82,7 +82,7 @@ CSV Input (30k customers)
 | Ordinal rank over XGBoost | Features are nearly uncorrelated (r ≈ 0.001) and no default labels exist — XGBoost was training on a synthetic target derived from the same inputs it sees; ordinal ranking is equivalent output with no model complexity or circularity |
 | scipy HiGHS (not PuLP) | Handles 30k decision variables in ~1.6s; no external solver binary needed |
 | Vectorised Monte Carlo | All 30k × 3,000 iterations computed as numpy matrix ops in 5k-row batches — runs in ~2s vs hours with loops |
-| Adaptive percentile thresholds | Actual credit scores compress into [403–739] not [300–850]; fixed thresholds left the Excellent bucket empty; 11/49/89th percentiles adapt to the real distribution |
+| K-Means for state boundaries | Percentile cuts (11/49/89) were reverse-engineered from the heuristic distribution — not data-driven. K-Means finds natural cluster boundaries in risk_rank without a pre-decided split; reveals bimodal structure (21/29/29/21%) the percentile method hides |
 | FRED data cached to JSON | No repeated API calls; pipeline works offline after first run |
 | Order-1 Markov (validated) | Comparison vs orders 2 and 3 shows max 0.87 pp deviation — memoryless assumption confirmed not restrictive |
 | LP–Markov feedback loop | LP increases adjust transition probabilities → updated steady-state rescales default_risk → LP re-optimises; converges in 4 iterations, Poor SS drops 21.3% → 17.7% |
@@ -280,11 +280,14 @@ Raw features (4 inputs)
         │
         │  compute_ordinal_risk_rank()   — weighted percentile ranks
         ▼
-  risk_rank  [0.0, 1.0]   (0 = safest, 1 = riskiest)
+  risk_rank  [0.224, 0.788]   (0 = safest, 1 = riskiest)
         │
-        │  assign_states_from_rank()   — adaptive 11/49/89th percentiles
-        ▼
-  credit_state  (Excellent / Good / Fair / Poor)
+        ├──────────────────────────────────────────────────────┐
+        │  assign_states_from_rank()                           │  assign_states_kmeans()
+        │  percentile method (comparison)                      │  K-Means (primary)
+        │  11/49/89th percentile cuts                          │  4 clusters, Voronoi boundaries
+        ▼                                                      ▼
+  states_pct  [11/38/40/11%]                          states_km  [21/29/29/21%]  ← adopted
         │
         │  rank_to_default_risk()   — state base rate × within-state rank
         ▼
@@ -312,78 +315,106 @@ risk_rank = 0.35 × r_payment + 0.30 × r_discipline
           + 0.15 × r_recency + 0.20 × r_profit
 ```
 
-`risk_rank` is a continuous value in [0, 1] with mean exactly 0.50 by construction (average of symmetric ranks). Last run range: **[0.224, 0.788]** — the compressed range reflects floor-clipping in the raw data.
+`risk_rank` has mean exactly 0.50 by construction. Last run range: **[0.224, 0.788]** — compressed because on-time payments is floor-clipped at 80% and 44% of customers have `profit = 0` and `increases = 0`.
 
-### Step 2 — Credit State Assignment (`assign_states_from_rank`)
+### Step 2 — Credit State Assignment: Two Methods Compared
 
-Thresholds are computed from the actual `risk_rank` distribution using adaptive percentile cuts targeting ~11/38/40/11% portfolio split:
+Both methods run at each execution. K-Means is adopted as primary.
+
+#### Method A — Percentile (comparison only)
 
 ```
-t_excellent = 11th percentile of risk_rank    → bottom 11% → Excellent
-t_good      = 49th percentile of risk_rank    → 11–49%     → Good
-t_fair      = 89th percentile of risk_rank    → 49–89%     → Fair
-                                              → top 11%    → Poor
+t1 = 11th percentile of risk_rank    → bottom 11% → Excellent
+t2 = 49th percentile                 → 11–49%     → Good
+t3 = 89th percentile                 → 49–89%     → Fair
+                                     → top 11%    → Poor
 ```
 
-**Last run thresholds:**
+The 11/49/89 cuts were derived by reverse-engineering the heuristic credit_score distribution (cumulative sums of 11.1/38.1/40.1/10.7%). They are not data-driven — they replicate a pre-decided split.
+
+#### Method B — K-Means Clustering (primary)
+
+```python
+KMeans(n_clusters=4, n_init=20, random_state=42).fit(risk_rank.reshape(-1, 1))
 ```
-Excellent ≤ 0.3548  |  Good ≤ 0.4963  |  Fair ≤ 0.6451  |  Poor > 0.6451
+
+Clusters are sorted by centroid value (ascending → Excellent to Poor). Boundaries are the **Voronoi midpoints** between adjacent centroids — the exact boundary where a point is equidistant from two cluster centres in 1D:
+
+```
+boundary[i] = (centroid[i] + centroid[i+1]) / 2
 ```
 
-Percentile thresholds are used rather than fixed values because `risk_rank` compresses into a subset of [0, 1] depending on data distribution — fixed thresholds would leave buckets empty.
+The cluster sizes reflect the **actual shape of the risk_rank distribution**, not a pre-decided split.
 
-### State Distribution: Ordinal Rank vs Heuristic
+### Boundary Comparison (last run)
 
-| State | Ordinal Rank | Heuristic (credit_score) | Delta |
-|---|---|---|---|
-| Excellent | 3,300 (11.0%) | 3,337 (11.1%) | ↓ 37 |
-| Good | 11,400 (38.0%) | 11,434 (38.1%) | ↓ 34 |
-| Fair | 12,000 (40.0%) | 12,024 (40.1%) | ↓ 24 |
-| Poor | 3,300 (11.0%) | 3,205 (10.7%) | ↑ 95 |
+```
+                  Excellent      Good        Fair
+Percentile        ≤ 0.3548    ≤ 0.4963    ≤ 0.6451
+K-Means           ≤ 0.3957    ≤ 0.4991    ≤ 0.6032
+```
 
-< 100 customers move per bucket — ordinal ranking and the heuristic score agree on customer ordering because both use the same four features with the same weights.
+The Good boundary is nearly identical (0.496 vs 0.499) — the distribution is dense in the middle and both methods agree there. Excellent and Fair boundaries shift by ~0.04.
+
+### State Distribution Comparison (last run)
+
+| State | K-Means (primary) | Percentile | Heuristic | K-Means vs Percentile |
+|---|---|---|---|---|
+| Excellent | 6,246 (20.8%) | 3,300 (11.0%) | 3,337 (11.1%) | ↑ 2,946 |
+| Good | 8,703 (29.0%) | 11,400 (38.0%) | 11,434 (38.1%) | ↓ 2,697 |
+| Fair | 8,757 (29.2%) | 12,000 (40.0%) | 12,024 (40.1%) | ↓ 3,243 |
+| Poor | 6,294 (21.0%) | 3,300 (11.0%) | 3,205 (10.7%) | ↑ 2,994 |
+
+**6,189 customers (20.6%) land in a different state between the two methods.**
+
+### Why K-Means Finds a Bimodal Shape
+
+K-Means reveals that the data has **two dense clusters** at the extremes, not four equally-spaced ones:
+
+- The 13,207 customers (44%) with `profit = 0` **and** `increases = 0` cluster at one end of `risk_rank` — their discipline and profit signals are tied, so their rank is driven almost entirely by payment history and recency, pulling them apart from active customers
+- Customers with non-zero profit and active credit behaviour cluster at the other end
+- The middle (Good/Fair) is thinner than the percentile method assumes
+
+The percentile method forces 11/38/40/11 because it was calibrated to match the heuristic score distribution. K-Means lets the data speak: the true shape is closer to **21/29/29/21** — bimodal, not unimodal-centred.
 
 ### Step 3 — Default Risk (`rank_to_default_risk`)
 
-`risk_rank` is a relative ordering, not a probability. To produce a `default_risk` value compatible with the LP's 5% portfolio constraint, it is mapped to a pseudo-probability anchored to state base rates:
+`risk_rank` is a relative ordering, not a probability. Mapped to a pseudo-probability anchored to assumed state base rates:
 
-| State | Base Default Rate |
-|---|---|
-| Excellent | 1.0% |
-| Good | 2.5% |
-| Fair | 7.0% |
-| Poor | 18.0% |
-
-Within each state, customers are ranked again (within-state percentile rank) to produce intra-state variation:
+| State | Base Rate | Output Range |
+|---|---|---|
+| Excellent | 1.0% | [0.50%, 1.50%] |
+| Good | 2.5% | [1.25%, 3.75%] |
+| Fair | 7.0% | [3.50%, 10.50%] |
+| Poor | 18.0% | [9.00%, 27.00%] |
 
 ```
-within_rank    = rank_pct(risk_rank  within state)     # [0, 1]
-default_risk   = clip( base_rate × (0.5 + within_rank),  0.001, 0.99 )
+within_rank  = rank_pct(risk_rank within state)
+default_risk = clip( base_rate × (0.5 + within_rank),  0.001, 0.99 )
 ```
-
-The `(0.5 + within_rank)` scale factor produces output in `[0.5×base, 1.5×base]` — e.g., Excellent customers range from 0.5% to 1.5%, Poor customers from 9% to 27%. Output range matches previous XGBoost output; all downstream LP constraints and portfolio risk checks are unchanged.
 
 ### Output Columns
 
 | Column | Description |
 |---|---|
 | `risk_rank` | Ordinal risk rank, `[0.224, 0.788]` — 0 = safest |
-| `credit_state` | State assigned from risk_rank percentile thresholds |
+| `credit_state` | State from K-Means clustering on risk_rank |
 | `default_risk` | Pseudo-probability, `[0.005, 0.270]` — used by LP |
 | `high_risk_flag` | `True` if `default_risk > 0.15` |
-| `risk_model` | `'ordinal_rank'` |
+| `risk_model` | `'ordinal_rank_kmeans'` |
 
 ### Last Run Results
 
 - Risk rank range: **[0.224, 0.788]**, mean 0.500
 - Default risk range: **[0.005, 0.270]**
-- High-risk customers (> 15%): **2,200 (7.3%)**
+- High-risk customers (> 15%): **4,196 (14.0%)**
+- Customers assigned differently vs percentile method: **6,189 (20.6%)**
 
 ### When to Upgrade
 
 Ordinal ranking should be replaced with a supervised model when:
-- **Real default/delinquency labels become available** — even a simple logistic regression on 5 features would be far more meaningful than any model trained on a synthetic target
-- **More features are added** — bureau data, transaction history, demographics; ordinal ranking does not scale gracefully to 50+ features with genuine interactions
+- **Real default/delinquency labels become available** — even logistic regression on 5 features would be more meaningful than any model trained on a synthetic target
+- **More features are added** — bureau data, transaction history, demographics; ordinal ranking does not scale to 50+ features with genuine interactions
 
 ---
 
@@ -674,5 +705,5 @@ Raw CSV
 - Expected incremental profit: $3.25M
 - Portfolio default risk: 5.00% (at constraint boundary)
 - LP solver: HiGHS, optimal in ~1.6s
-- Risk model: ordinal rank, 2,200 high-risk customers flagged (7.3%)
+- Risk model: ordinal rank + K-Means boundaries, 4,196 high-risk customers flagged (14.0%)
 - 44/44 property tests pass
