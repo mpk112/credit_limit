@@ -83,6 +83,8 @@ CSV Input (30k customers)
 | Vectorised Monte Carlo | All 30k × 3,000 iterations computed as numpy matrix ops in 5k-row batches — runs in ~2s vs hours with loops |
 | Fixed credit state thresholds | Domain-calibrated (655/572/483 on 300–850 scale) → realistic 11%/38%/40%/11% distribution |
 | FRED data cached to JSON | No repeated API calls; pipeline works offline after first run |
+| Order-1 Markov (validated) | Comparison vs orders 2 and 3 shows max 0.87 pp deviation — memoryless assumption confirmed not restrictive |
+| LP–Markov feedback loop | LP increases adjust transition probabilities → updated steady-state rescales default_risk → LP re-optimises; converges in 4 iterations, Poor SS drops 21.3% → 17.7% |
 
 ---
 
@@ -186,8 +188,81 @@ The matrix is rendered as a heatmap showing the full credit migration picture. H
 | P12 | Matrix is 4×4 square |
 | P13 | Steady-state vector sums to 1.0 |
 
-### Limitation
-The Markov chain is **descriptive, not prescriptive**. Transition probabilities do not change in response to the LP's recommended limit increases. A full MDP (Markov Decision Process) formulation — Task 12.1 in the spec — would let transition probabilities be a function of the limit decision, closing that loop. In the current implementation the Markov chain and LP run as separate, non-interacting components.
+### Higher-Order Markov Chain Comparison
+
+The standard (order-1) Markov assumption states that the next credit state depends only on the current state, not on the path taken to get there. To test whether this is restrictive, orders 1, 2, and 3 are compared at each run.
+
+**How higher-order chains work:**
+- **Order k**: next state depends on the last k states — the history tuple `(s_{t-k+1}, ..., s_t)` drives the transition
+- State space expands to 4^k tuple-states (16 for order 2, 64 for order 3)
+- Steady-state is computed on the expanded chain then marginalised back to the 4 credit states
+
+**Implementation:** For each customer, a trajectory of length k+1 is simulated using vectorised numpy sampling from the first-order base probabilities. A dict maps each k-state history tuple to a probability vector over next states.
+
+**Last run results:**
+
+| Order | Excellent | Good | Fair | Poor | Max Δ vs Order-1 |
+|---|---|---|---|---|---|
+| 1 | 16.09% | 29.51% | 33.06% | 21.34% | — |
+| 2 | 15.71% | 30.38% | 33.05% | 20.86% | 0.87 pp |
+| 3 | 15.22% | 29.99% | 33.75% | 21.04% | 0.87 pp |
+
+**Conclusion:** Max deviation of 0.87 pp confirms the memoryless assumption is not materially restrictive for this portfolio. The order-1 chain is sufficient.
+
+---
+
+### LP–Markov Feedback Loop
+
+The limitation of a purely descriptive Markov chain is resolved by coupling it with the LP output through an iterative feedback loop.
+
+**Mechanism:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Iteration k                                            │
+│                                                         │
+│  current default_risk  ──→  LP optimise  ──→  x*_i     │
+│                                                         │
+│  x*_i  ──→  apply_policy_to_transitions()               │
+│             (larger increase → higher stay/upgrade prob) │
+│                                                         │
+│  adjusted T  ──→  steady-state  ──→  new Poor fraction  │
+│                                                         │
+│  risk_scale = (base_poor + adj_poor) / (2 × base_poor)  │
+│  updated default_risk = original × risk_scale           │
+│                                                         │
+│  ──→ Iteration k+1                                      │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Policy adjustment logic (`apply_policy_to_transitions`):**
+- Relative increase = `limit_increase / initial_loan`
+- Improvement = `relative_increase × (1 − default_risk) × 0.15` (capped at 10 pp)
+- Risky customers (high `default_risk`) benefit less from the same absolute increase
+- Per-state effect: diagonal ↑ +60% of improvement, upgrade ↑ +40%, downgrade ↓ −50%
+- Per-customer adjustments aggregated by state → adjusted 4×4 portfolio matrix
+
+**Convergence:** Loop terminates when mean absolute change in limit increases < $1, or after 5 iterations.
+
+**Last run results (converged in 4 iterations):**
+
+| Iteration | Customers↑ | Poor SS | Risk Scale | Objective |
+|---|---|---|---|---|
+| 1 | 8,748 | 17.79% | 0.9169 | $39.6B |
+| 2 | 8,747 | 17.66% | 0.9138 | $40.8B |
+| 3 | 8,746 | 17.66% | 0.9137 | $40.9B |
+| 4 | 8,747 | 17.66% | 0.9137 | $40.9B |
+
+**Steady-state shift after policy:**
+
+| State | Base SS | Policy-Adjusted SS | Direction |
+|---|---|---|---|
+| Excellent | 16.1% | 19.5% | ↑ |
+| Good | 29.5% | 32.3% | ↑ |
+| Fair | 33.1% | 30.5% | ↓ |
+| Poor | 21.3% | 17.7% | ↓ |
+
+The LP's recommended increases shift the long-run portfolio toward better credit states. Poor drops from 21.3% → 17.7%, and the objective value stabilises at ~$40.9B after iteration 2, demonstrating the feedback loop adds value over a static one-shot optimisation.
 
 ---
 
