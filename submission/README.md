@@ -25,9 +25,9 @@ Macro data is pre-cached; no FRED API key needed for the baseline run.
 
 ## Key results (baseline scenario)
 
-- **26,536 customers** (88.5%) receive a recommended limit increase
-- **$20.9M** total incremental exposure (30% per-step cap applied)
-- **$785,451** net expected profit ($966K revenue − $181K expected losses)
-- **4.17%** weighted default risk on new exposure (below 5% cap)
-- **3.76%** return on incremental exposure
+- **21,740 customers** (72.5%) receive a recommended limit increase
+- **$16.9M** total incremental exposure (30% per-step cap; 4,932 ineligible excluded)
+- **$631,741** net expected profit ($792K revenue − $160K expected losses)
+- **3.51%** weighted default risk on new exposure (below 5% cap)
+- **3.73%** return on incremental exposure
 - **44/44** model correctness properties verified
