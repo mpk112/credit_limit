@@ -351,6 +351,88 @@ Preserves the model's relative ranking while anchoring absolute probabilities to
 
 ---
 
+## Demand Forecasting Component
+
+### What It Does
+Answers: *"If we give a customer a higher limit, how much of it will they actually use over the next year?"* The output — `forecasted_utilization` — is the fraction of the credit limit a customer is expected to draw down over the 365-day horizon. It drives everything downstream: revenue (interest on drawn balance), loss (defaulting on drawn balance), and the NPV calculation in the lifecycle simulation.
+
+### Two-Layer Monte Carlo
+
+**Layer 1 — Cohort-level Geometric Brownian Motion (3,000 scenarios)**
+
+For each credit state, 3,000 terminal utilization values are simulated using GBM — the same stochastic process used in option pricing:
+
+```
+util_terminal = μ × exp(−½σ²t + σ√t × Z)    Z ~ N(0,1),  t = 1.0 year
+```
+
+Base cohort parameters:
+
+| State | Mean (μ) | Volatility (σ) |
+|---|---|---|
+| Excellent | 0.30 | 0.08 |
+| Good | 0.45 | 0.10 |
+| Fair | 0.58 | 0.13 |
+| Poor | 0.70 | 0.16 |
+
+GBM lognormal structure is chosen because utilization cannot go below 0 or above 1, and the multiplicative form naturally keeps values bounded and positively skewed — matching how real utilization behaves.
+
+**Layer 2 — Individual customer perturbation**
+
+The 3,000 scenarios collapse to a cohort mean and standard deviation. Each customer's forecast blends:
+
+```python
+individual_util = utilization_rate × 0.4 + cohort_mean × 0.6 + N(0, cohort_std × 0.3)
+```
+
+The 60/40 blend prevents ignoring individual history entirely (a customer who historically uses 90% of their limit should forecast higher than the cohort mean) while anchoring to the macro-adjusted cohort expectation.
+
+### Macro Scenario Adjustment
+
+The forecast is scenario-aware — cohort parameters are adjusted before simulation:
+
+| Scenario | Drift Adjustment | Volatility Scale | Interpretation |
+|---|---|---|---|
+| Optimistic | +0.02 | ×0.80 | Customers less stretched, behaviour more predictable |
+| Baseline | 0.00 | ×1.00 | No adjustment |
+| Adverse | −0.03 | ×1.30 | Customers draw more credit, behaviour harder to predict |
+
+### Output Columns
+
+| Column | Meaning |
+|---|---|
+| `forecasted_utilization` | Expected fraction of limit drawn over next year, clipped to `[0.01, 0.99]` |
+| `utilization_std` | Volatility of the forecast — uncertainty of the estimate |
+
+Last run results (baseline scenario):
+
+| Stat | Value |
+|---|---|
+| Mean utilization | 36.2% |
+| Median | 35.9% |
+| Min / Max | 17.7% / 86.5% |
+| Std dev | 9.98% |
+
+### How It Feeds Downstream
+
+`forecasted_utilization` is the primary input to the Lifecycle Simulation (Stage 6), which computes:
+
+- **Expected revenue** = `limit × utilization × interest_rate`
+- **Expected loss** = `limit × utilization × default_risk × loss_given_default`
+- **Profitability score** = NPV-discounted (revenue − loss)
+
+The LP then maximises total profitability score across all customers. Without demand forecasting, the LP would treat a $10,000 increase identically regardless of whether a customer draws 20% or 90% of their limit — producing systematically wrong profit and risk estimates.
+
+### Property Tests
+
+| Property | Check |
+|---|---|
+| P18 | `forecasted_utilization` ∈ `[0, 1]` for all customers |
+| P19 | ≥ 3,000 Monte Carlo scenarios run |
+| P20 | Forecast horizon = 365 days |
+
+---
+
 ## Macroeconomic Scenarios
 
 | Scenario | GDP | Unemployment | Interest Rate | Inflation |
