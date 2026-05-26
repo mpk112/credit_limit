@@ -29,7 +29,7 @@ Simplified breakeven:  p_def × balance  <  80.0
 | Excellent | 22.8 | **3.5× below** — safe margin |
 | Good | 42.5 | **1.9× below** — comfortable |
 | Fair | 86.7 | **3 customers breach** → 99.96% approval |
-| Poor | 134.1 | Many breach → 75.2% approval |
+| Poor | 134.1 | Many breach → 60.2% approval |
 
 ---
 
@@ -40,15 +40,15 @@ max `p_def × balance` (22.8 and 42.5) never reaches any plausible breakeven.
 
 | LGD | Excellent | Good | Fair | Poor |
 |-----|-----------|------|------|------|
-| 60% (base) | 100.0% | 100.0% | 99.2% | 44.1% |
-| 65% | 100.0% | 100.0% | 97.5% | 39.3% |
-| 70% | 100.0% | 100.0% | **94.7%** | 35.7% |
-| 75% | 100.0% | 100.0% | **90.9%** | 33.2% |
-| 80% | 100.0% | 100.0% | **86.3%** | 30.5% |
-| 85% | 100.0% | 100.0% | **81.3%** | 28.1% |
+| 60% (base) | 100.0% | 100.0% | 99.2% | 60.2% |
+| 65% | 100.0% | 100.0% | 97.5% | 54.9% |
+| 70% | 100.0% | 100.0% | **94.6%** | 49.8% |
+| 75% | 100.0% | 100.0% | **90.9%** | 46.1% |
+| 80% | 100.0% | 100.0% | **86.3%** | 42.1% |
+| 85% | 100.0% | 100.0% | **81.3%** | 38.6% |
 
 **Realistic calibration range:** 65–75% (industry standard for unsecured consumer credit).
-LGD=70% brings Fair approval to ~95% — a more defensible assumption.
+LGD=70% brings Fair approval to ~95% and Poor to ~50% — a more defensible assumption.
 
 ---
 

@@ -91,16 +91,16 @@ Baseline: **60%**. Industry range for unsecured consumer: 55–80%.
 
 | LGD | Excellent | Good | Fair | Poor |
 |-----|-----------|------|------|------|
-| 60% (base) | 100.0% | 100.0% | 99.2% | 44.1% |
-| 65% | 100.0% | 100.0% | 97.5% | 39.3% |
-| 70% | 100.0% | 100.0% | 94.7% | 35.7% |
-| 75% | 100.0% | 100.0% | 90.9% | 33.2% |
-| 80% | 100.0% | 100.0% | 86.3% | 30.5% |
-| 85% | 100.0% | 100.0% | 81.3% | 28.1% |
+| 60% (base) | 100.0% | 100.0% | 99.2% | 60.2% |
+| 65% | 100.0% | 100.0% | 97.5% | 54.9% |
+| 70% | 100.0% | 100.0% | 94.6% | 49.8% |
+| 75% | 100.0% | 100.0% | 90.9% | 46.1% |
+| 80% | 100.0% | 100.0% | 86.3% | 42.1% |
+| 85% | 100.0% | 100.0% | 81.3% | 38.6% |
 
 **Strategy:** LGD=70% is the industry midpoint for unsecured consumer credit and a
-defensible conservative assumption. Applying it brings Fair approval to ~95% without
-changing the product structure.
+defensible conservative assumption. Applying it brings Fair approval to ~95% and
+Poor to ~50% without changing the product structure.
 
 ### Lever 2 — Hazard Rate λ (Annual Default Probability)
 
@@ -108,7 +108,7 @@ Baseline: 1.5% / 4% / 10% / 22% (Excellent / Good / Fair / Poor).
 
 | λ multiplier | Fair λ | Excellent | Good | Fair | Poor |
 |---|---|---|---|---|---|
-| ×1.0 (base) | 10% | 100.0% | 100.0% | 99.2% | 44.1% |
+| ×1.0 (base) | 10% | 100.0% | 100.0% | 99.2% | 60.2% |
 | ×1.2 | 12% | 100.0% | 100.0% | 93.1% | 34.5% |
 | ×1.5 | 15% | 100.0% | 100.0% | 76.6% | 25.8% |
 | ×2.0 | 20% | 100.0% | 99.97% | 54.4% | 15.7% |
@@ -179,7 +179,7 @@ LGD:  60% → 70%    (industry midpoint for unsecured consumer credit)
 | Excellent | 100.0% | 100.0% |
 | Good | 100.0% | 100.0% |
 | Fair | 99.2% | ~88% |
-| Poor | 75.2% | ~30% |
+| Poor | 60.2% | ~35% |
 
 Excellent and Good remain fully approved — their risk is genuinely low and the model
 is correct to approve them. Fair and Poor reach more defensible approval rates that

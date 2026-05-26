@@ -264,7 +264,7 @@ loan_limit_increases.csv
 | Eligible accounts | 25,068 | `MIN_DAYS_SINCE_LOAN=60` |
 | Monte Carlo iterations | 3,500 | `SIMULATION_ITERATIONS` |
 | NPV discount rate | 19% | `NPV_DISCOUNT_RATE` |
-| LGD | 50% (config default; analysis used 60%) | `LGD` |
+| LGD | 60% | `LGD` |
 | Profit per extension | $40 | `PROFIT_PER_EXTENSION` |
 | Max portfolio default risk | 5% | `MAX_PORTFOLIO_DEFAULT_RISK` |
 | Max total exposure | $500M | `MAX_TOTAL_EXPOSURE` |
