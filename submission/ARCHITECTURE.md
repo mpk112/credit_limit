@@ -59,7 +59,7 @@
 │  matrix()           │  │  Vectorised — no Python loops                    │
 │                     │  │                                                  │
 │  4×4 matrix:        │  │  Per customer (all 30k as matrix ops):           │
-│  Exc→{E,G,F,P}      │  │  • T ~ LogNormal(μ_ln_s, σ_ln_s)               │
+│  Exc→{E,G,F,P}      │  │  • T ~ lognorm(_ln_params(mean,std))            │
 │  Goo→{E,G,F,P}      │  │    clipped [30, 180] days                       │
 │  Fai→{E,G,F,P}      │  │  • p_def_T = 1−exp(−λ·T/365)                   │
 │  Poo→{E,G,F,P}      │  │  • is_early ~ Bernoulli(p_early_s)              │
@@ -264,7 +264,7 @@ loan_limit_increases.csv
 | Eligible accounts | 25,068 | `MIN_DAYS_SINCE_LOAN=60` |
 | Monte Carlo iterations | 3,500 | `SIMULATION_ITERATIONS` |
 | NPV discount rate | 19% | `NPV_DISCOUNT_RATE` |
-| LGD | 50% | `LGD` |
+| LGD | 50% (config default; analysis used 60%) | `LGD` |
 | Profit per extension | $40 | `PROFIT_PER_EXTENSION` |
 | Max portfolio default risk | 5% | `MAX_PORTFOLIO_DEFAULT_RISK` |
 | Max total exposure | $500M | `MAX_TOTAL_EXPOSURE` |
