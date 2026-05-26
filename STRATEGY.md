@@ -83,7 +83,7 @@ Max `p_def × balance` by state at baseline:
 | Excellent | 22.8 | 3.5× below — immune to calibration |
 | Good | 42.5 | 1.9× below — immune to most changes |
 | Fair | 86.7 | 3 customers breach — 99.96% approval |
-| Poor | 134.1 | Many breach — 75.2% approval |
+| Poor | 134.1 | Many breach → 60.2% approval |
 
 ### Lever 1 — LGD (Loss Given Default)
 
@@ -219,7 +219,7 @@ Deploy in phases to manage operational risk and validate model assumptions:
 |-------|---------|----------|----------------|------|
 | 1 | Top-quartile by profitability_score | ~6,000 | ~$260K | Low |
 | 2 | All eligible Excellent + Good + Fair | ~19,714 | ~$578K | Moderate |
-| 3 | LP-approved Poor (post Phase 2 validation) | ~4,026 | ~$76K | Higher |
+| 3 | LP-approved Poor (post Phase 2 validation) | ~3,210 | ~$53K | Higher |
 
 **Gate between each phase:** Compare 30-day rolling actual default rate vs simulated
 `p_default_sim`. Proceed only if actual ≤ 1.5× simulated.
@@ -230,7 +230,7 @@ Deploy in phases to manage operational risk and validate model assumptions:
 
 | Scenario | Fee | LGD | λ mult | Approval (Fair) | Net Profit |
 |----------|-----|-----|--------|-----------------|------------|
-| Aggressive | $40 | 60% | ×1.0 | 99.2% | $654K |
+| Aggressive | $40 | 60% | ×1.0 | 99.2% | $601K |
 | Conservative | $40 | 70% | ×1.2 | ~88% | ~$580K |
 | Stress test | $30 | 70% | ×1.2 | ~60% | ~$390K |
 | Risk-based pricing | Variable | 65% | ×1.1 | ~93% | ~$640K |

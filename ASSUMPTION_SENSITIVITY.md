@@ -4,7 +4,7 @@
 > approval rate below 100% for Excellent, Good, and Fair credit states?
 
 The baseline model approves 100% of eligible Excellent and Good customers, ~99.2% of Fair,
-and 75.2% of Poor. The analysis below stress-tests every calibration assumption to identify
+and 60.2% of Poor. The analysis below stress-tests every calibration assumption to identify
 which levers actually matter.
 
 ---

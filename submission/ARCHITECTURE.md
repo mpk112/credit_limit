@@ -278,12 +278,12 @@ loan_limit_increases.csv
 
 | Metric | Value |
 |--------|-------|
-| Extensions granted | 23,740 (79.1% overall · 94.7% of eligible) |
-| Total extended exposure | $63,105,373 |
-| Projected revenue | $933,058 |
-| Projected expected losses | $278,862 |
-| Net projected profit | $654,196 |
+| Extensions granted | 22,887 (76.3% overall · 91.3% of eligible) |
+| Total extended exposure | $59,980,315 |
+| Projected revenue | $899,373 |
+| Projected expected losses | $298,485 |
+| Net projected profit | $600,888 |
 | Return on exposure | 1.04% |
-| Portfolio default risk | 0.90% (cap: 5.0% — slack by 4.1 pp) |
-| Average extension term | 67.8 days |
+| Portfolio default risk | 0.84% (cap: 5.0% — slack by 4.2 pp) |
+| Average extension term | 68.5 days |
 | Poor steady-state (post-feedback) | 16.7% (down from 21.0%) |
